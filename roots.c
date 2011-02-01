@@ -226,7 +226,7 @@ int format_volume(const char* volume) {
         LOGE("can't give path \"%s\" to format_volume\n", volume);
         return -1;
 #endif
-        return format_unknown_device(volume);
+        return format_unknown_device(v->device, volume, NULL);
     }
 
     if (ensure_path_unmounted(volume) != 0) {
@@ -257,6 +257,10 @@ int format_volume(const char* volume) {
         return 0;
     }
 
+    if (strcmp(v->fs_type, "emmc") == 0) {
+        return erase_raw_partition(v->device);
+    }
+
     if (strcmp(v->fs_type, "ext4") == 0) {
         reset_ext4fs_info();
         int result = make_ext4fs(v->device, NULL, NULL, 0, 0, 0);
@@ -271,5 +275,5 @@ int format_volume(const char* volume) {
     LOGE("format_volume: fs_type \"%s\" unsupported\n", v->fs_type);
     return -1;
 #endif
-    return format_unknown_device(volume);
+    return format_unknown_device(v->device, volume, v->fs_type);
 }

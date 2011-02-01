@@ -278,9 +278,30 @@ mmc_scan_partitions() {
     return g_mmc_state.partition_count;
 }
 
+static const MmcPartition *
+mmc_find_partition_by_device_index(const char *device_index)
+{
+    if (g_mmc_state.partitions != NULL) {
+        int i;
+        for (i = 0; i < g_mmc_state.partitions_allocd; i++) {
+            MmcPartition *p = &g_mmc_state.partitions[i];
+            if (p->device_index !=NULL && p->name != NULL) {
+                if (strcmp(p->device_index, device_index) == 0) {
+                    return p;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
 const MmcPartition *
 mmc_find_partition_by_name(const char *name)
 {
+    if (name[0] == '/') {
+        return mmc_find_partition_by_device_index(name);
+    }
+
     if (g_mmc_state.partitions != NULL) {
         int i;
         for (i = 0; i < g_mmc_state.partitions_allocd; i++) {
@@ -299,7 +320,7 @@ mmc_find_partition_by_name(const char *name)
 #define TUNE2FS_BIN     "/sbin/tune2fs"
 #define E2FSCK_BIN      "/sbin/e2fsck"
 
-static int
+int
 run_exec_process ( char **argv) {
     pid_t pid;
     int status;
@@ -318,9 +339,7 @@ run_exec_process ( char **argv) {
 }
 
 int
-mmc_format_ext3 (MmcPartition *partition) {
-    char device[128];
-    strcpy(device, partition->device_index);
+format_ext3_device (const char *device) {
     // Run mke2fs
     char *const mke2fs[] = {MKE2FS_BIN, "-j", device, NULL};
     if(run_exec_process(mke2fs))
@@ -337,6 +356,33 @@ mmc_format_ext3 (MmcPartition *partition) {
         return -1;
 
     return 0;
+}
+
+int
+format_ext2_device (const char *device) {
+    // Run mke2fs
+    char *const mke2fs[] = {MKE2FS_BIN, device, NULL};
+    if(run_exec_process(mke2fs))
+        return -1;
+
+    // Run tune2fs
+    char *const tune2fs[] = {TUNE2FS_BIN, "-C", "1", device, NULL};
+    if(run_exec_process(tune2fs))
+        return -1;
+
+    // Run e2fsck
+    char *const e2fsck[] = {E2FSCK_BIN, "-fy", device, NULL};
+    if(run_exec_process(e2fsck))
+        return -1;
+
+    return 0;
+}
+
+int
+mmc_format_ext3 (MmcPartition *partition) {
+    char device[128];
+    strcpy(device, partition->device_index);
+    return format_ext3_device(device);
 }
 
 int

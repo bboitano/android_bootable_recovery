@@ -210,20 +210,20 @@ char** gather_files(const char* directory, const char* fileExtensionOrDirectory,
         return NULL;
     }
 
-	// sort the result
-	if (files != NULL) {
-		for (i = 0; i < total; i++) {
-			int curMax = -1;
-			int j;
-			for (j = 0; j < total - i; j++) {
-				if (curMax == -1 || strcmp(files[curMax], files[j]) < 0)
-					curMax = j;
-			}
-			char* temp = files[curMax];
-			files[curMax] = files[total - i - 1];
-			files[total - i - 1] = temp;
-		}
-	}
+    // sort the result
+    if (files != NULL) {
+        for (i = 0; i < total; i++) {
+            int curMax = -1;
+            int j;
+            for (j = 0; j < total - i; j++) {
+                if (curMax == -1 || strcmp(files[curMax], files[j]) < 0)
+                    curMax = j;
+            }
+            char* temp = files[curMax];
+            files[curMax] = files[total - i - 1];
+            files[total - i - 1] = temp;
+        }
+    }
 
     return files;
 }
@@ -333,15 +333,24 @@ void show_nandroid_restore_menu()
         return;
 
     if (confirm_selection("Confirm restore?", "Yes - Restore"))
-        nandroid_restore(file, 1, 1, 1, 1, 1);
+        nandroid_restore(file, 1, 1, 1, 1, 1, 0);
 }
 
 void show_mount_usb_storage_menu()
 {
-    char command[PATH_MAX];
+    int fd;
     Volume *vol = volume_for_path("/sdcard");
-    sprintf(command, "echo %s > /sys/devices/platform/usb_mass_storage/lun0/file", vol->device);
-    __system(command);
+    if ((fd = open("/sys/devices/platform/usb_mass_storage/lun0/file",
+                   O_WRONLY)) < 0) {
+        LOGE("Unable to open ums lunfile (%s)", strerror(errno));
+        return -1;
+    }
+
+    if (write(fd, vol->device, strlen(vol->device)) < 0) {
+        LOGE("Unable to write to ums lunfile (%s)", strerror(errno));
+        close(fd);
+        return -1;
+    }
     static char* headers[] = {  "USB Mass Storage device",
                                 "Leaving this menu unmount",
                                 "your SD card from your PC.",
@@ -358,8 +367,17 @@ void show_mount_usb_storage_menu()
             break;
     }
 
-    __system("echo '' > /sys/devices/platform/usb_mass_storage/lun0/file");
-    __system("echo 0 > /sys/devices/platform/usb_mass_storage/lun0/enable");
+    if ((fd = open("/sys/devices/platform/usb_mass_storage/lun0/file", O_WRONLY)) < 0) {
+        LOGE("Unable to open ums lunfile (%s)", strerror(errno));
+        return -1;
+    }
+
+    char ch = 0;
+    if (write(fd, &ch, 1) < 0) {
+        LOGE("Unable to write to ums lunfile (%s)", strerror(errno));
+        close(fd);
+        return -1;
+    }
 }
 
 int confirm_selection(const char* title, const char* confirm)
@@ -386,9 +404,19 @@ int confirm_selection(const char* title, const char* confirm)
     return chosen_item == 7;
 }
 
-int format_unknown_device(const char* path)
+#define MKE2FS_BIN      "/sbin/mke2fs"
+#define TUNE2FS_BIN     "/sbin/tune2fs"
+#define E2FSCK_BIN      "/sbin/e2fsck"
+
+int format_unknown_device(const char *device, const char* path, const char *fs_type)
 {
-    // if this is SDEXT:, don't worry about it.
+    LOGI("Formatting unknown device.\n");
+
+    // device may simply be a name, like "system"
+    if (device[0] != '/')
+        return erase_raw_partition(device);
+
+    // if this is SDEXT:, don't worry about it if it does not exist.
     if (0 == strcmp(path, "/sd-ext"))
     {
         struct stat st;
@@ -397,6 +425,26 @@ int format_unknown_device(const char* path)
         {
             ui_print("No app2sd partition found. Skipping format of /sd-ext.\n");
             return 0;
+        }
+    }
+
+    if (NULL != fs_type) {
+        if (strcmp("ext3", fs_type) == 0) {
+            LOGI("Formatting ext3 device.\n");
+            if (0 != ensure_path_unmounted(path)) {
+                LOGE("Error while unmounting %s.\n", path);
+                return -12;
+            }
+            return format_ext3_device(device);
+        }
+
+        if (strcmp("ext2", fs_type) == 0) {
+            LOGI("Formatting ext2 device.\n");
+            if (0 != ensure_path_unmounted(path)) {
+                LOGE("Error while unmounting %s.\n", path);
+                return -12;
+            }
+            return format_ext2_device(device);
         }
     }
 
@@ -441,7 +489,7 @@ void show_partition_menu()
     };
 
     string devices[][2] = {
-        { "format boot", "boot:" },
+        { "format boot", "/boot" },
         { "format system", "/system" },
         { "format data", "/data" },
         { "format cache", "/cache" },
@@ -644,9 +692,15 @@ void show_nandroid_advanced_restore_menu()
                             "Restore data",
                             "Restore cache",
                             "Restore sd-ext",
+                            "Restore wimax",
                             NULL
     };
-
+    
+    char tmp[PATH_MAX];
+    if (0 != get_partition_device("wimax", tmp)) {
+        // disable wimax restore option
+        list[5] = NULL;
+    }
 
     static char* confirm_restore  = "Confirm restore?";
 
@@ -655,23 +709,27 @@ void show_nandroid_advanced_restore_menu()
     {
         case 0:
             if (confirm_selection(confirm_restore, "Yes - Restore boot"))
-                nandroid_restore(file, 1, 0, 0, 0, 0);
+                nandroid_restore(file, 1, 0, 0, 0, 0, 0);
             break;
         case 1:
             if (confirm_selection(confirm_restore, "Yes - Restore system"))
-                nandroid_restore(file, 0, 1, 0, 0, 0);
+                nandroid_restore(file, 0, 1, 0, 0, 0, 0);
             break;
         case 2:
             if (confirm_selection(confirm_restore, "Yes - Restore data"))
-                nandroid_restore(file, 0, 0, 1, 0, 0);
+                nandroid_restore(file, 0, 0, 1, 0, 0, 0);
             break;
         case 3:
             if (confirm_selection(confirm_restore, "Yes - Restore cache"))
-                nandroid_restore(file, 0, 0, 0, 1, 0);
+                nandroid_restore(file, 0, 0, 0, 1, 0, 0);
             break;
         case 4:
             if (confirm_selection(confirm_restore, "Yes - Restore sd-ext"))
-                nandroid_restore(file, 0, 0, 0, 0, 1);
+                nandroid_restore(file, 0, 0, 0, 0, 1, 0);
+            break;
+        case 5:
+            if (confirm_selection(confirm_restore, "Yes - Restore wimax"))
+                nandroid_restore(file, 0, 0, 0, 0, 0, 1);
             break;
     }
 }
@@ -938,6 +996,9 @@ void create_fstab()
         LOGW("Unable to create /etc/fstab!\n");
         return;
     }
+    Volume *vol = volume_for_path("/boot");
+    if (NULL != vol && strcmp(vol->fs_type, "mtd") != 0)
+         write_fstab_root("/boot", file);
     write_fstab_root("/cache", file);
     write_fstab_root("/data", file);
     if (has_datadata()) {
@@ -1007,7 +1068,7 @@ void process_volumes() {
     ui_print("in case of error.\n");
 
     nandroid_backup(backup_path);
-    nandroid_restore(backup_path, 1, 1, 1, 1, 1);
+    nandroid_restore(backup_path, 1, 1, 1, 1, 1, 0);
     ui_set_show_text(0);
 }
 
@@ -1020,18 +1081,6 @@ void handle_failure(int ret)
     mkdir("/sdcard/clockworkmod", S_IRWXU);
     __system("cp /tmp/recovery.log /sdcard/clockworkmod/recovery.log");
     ui_print("/tmp/recovery.log was copied to /sdcard/clockworkmod/recovery.log. Please open ROM Manager to report the issue.\n");
-}
-
-int format_device(const char* device) {
-    if (device == NULL)
-        return -1;
-    if (device[0] == '/') {
-        Volume *vol = volume_for_path(device);
-        if (vol == NULL)
-            return -1;
-        return erase_partition(device, vol->fs_type);
-    }
-    return erase_raw_partition(device);
 }
 
 int is_path_mounted(const char* path) {
@@ -1064,3 +1113,28 @@ int has_datadata() {
     Volume *vol = volume_for_path("/datadata");
     return vol != NULL;
 }
+
+int volume_main(int argc, char **argv) {
+    load_volume_table();
+    return 0;
+}
+
+void handle_chargemode() {
+    const char* filename = "/proc/cmdline";
+    struct stat file_info;
+    if (0 != stat(filename, &file_info))
+        return;
+
+    int file_len = file_info.st_size;
+    char* file_data = (char*)malloc(file_len + 1);
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL)
+        return;
+    fread(file_data, file_len, 1, file);
+    // supposedly not necessary, but let's be safe.
+    file_data[file_len] = '\0';
+    fclose(file);
+    
+    if (strstr(file_data, "androidboot.mode=offmode_charging") != NULL)
+        reboot(RB_POWER_OFF);
+ }
